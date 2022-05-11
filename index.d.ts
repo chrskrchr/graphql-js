@@ -295,7 +295,6 @@ export type {
   ExecutionResult,
   FormattedExecutionResult,
 } from './execution/index';
-export type { SubscriptionArgs } from './subscription/index';
 export {
   validate,
   ValidationContext,
@@ -346,13 +345,13 @@ export {
   formatError,
 } from './error/index';
 export type {
+  GraphQLErrorOptions,
   GraphQLFormattedError,
   GraphQLErrorExtensions,
 } from './error/index';
 export {
   getIntrospectionQuery,
   getOperationAST,
-  getOperationRootType,
   introspectionFromSchema,
   buildClientSchema,
   buildASTSchema,
