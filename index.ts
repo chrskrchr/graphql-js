@@ -143,6 +143,8 @@ export type {
   GraphQLAbstractType,
   GraphQLWrappingType,
   GraphQLNullableType,
+  GraphQLNullableInputType,
+  GraphQLNullableOutputType,
   GraphQLNamedType,
   GraphQLNamedInputType,
   GraphQLNamedOutputType,
@@ -214,7 +216,6 @@ export {
   // Visit
   visit,
   visitInParallel,
-  getVisitFn,
   getEnterLeaveForKind,
   BREAK,
   Kind,
@@ -223,6 +224,7 @@ export {
   isDefinitionNode,
   isExecutableDefinitionNode,
   isSelectionNode,
+  isNullabilityAssertionNode,
   isValueNode,
   isConstValueNode,
   isTypeNode,
@@ -234,9 +236,6 @@ export {
 export type {
   ParseOptions,
   SourceLocation,
-  TokenKindEnum,
-  KindEnum,
-  DirectiveLocationEnum,
   // Visitor utilities
   ASTVisitor,
   ASTVisitFn,
@@ -256,6 +255,10 @@ export type {
   SelectionNode,
   FieldNode,
   ArgumentNode,
+  NullabilityAssertionNode,
+  NonNullAssertionNode,
+  ErrorBoundaryNode,
+  ListNullabilityOperatorNode,
   ConstArgumentNode,
   FragmentSpreadNode,
   InlineFragmentNode,
@@ -370,13 +373,7 @@ export {
 } from './validation/index.ts';
 export type { ValidationRule } from './validation/index.ts';
 // Create, format, and print GraphQL errors.
-export {
-  GraphQLError,
-  syntaxError,
-  locatedError,
-  printError,
-  formatError,
-} from './error/index.ts';
+export { GraphQLError, syntaxError, locatedError } from './error/index.ts';
 export type {
   GraphQLErrorOptions,
   GraphQLFormattedError,
@@ -430,10 +427,6 @@ export {
   isEqualType,
   isTypeSubTypeOf,
   doTypesOverlap,
-  // Asserts a string is a valid GraphQL name.
-  assertValidName,
-  // Determine if a string is a valid GraphQL name.
-  isValidNameError,
   // Compares two GraphQLSchemas and detects breaking changes.
   BreakingChangeType,
   DangerousChangeType,

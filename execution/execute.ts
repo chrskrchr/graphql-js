@@ -1,6 +1,6 @@
-import { devAssert } from '../jsutils/devAssert.ts';
 import { inspect } from '../jsutils/inspect.ts';
 import { invariant } from '../jsutils/invariant.ts';
+import { isAsyncIterable } from '../jsutils/isAsyncIterable.ts';
 import { isIterableObject } from '../jsutils/isIterableObject.ts';
 import { isObjectLike } from '../jsutils/isObjectLike.ts';
 import { isPromise } from '../jsutils/isPromise.ts';
@@ -41,18 +41,17 @@ import {
   isNonNullType,
   isObjectType,
 } from '../type/definition.ts';
-import {
-  SchemaMetaFieldDef,
-  TypeMetaFieldDef,
-  TypeNameMetaFieldDef,
-} from '../type/introspection.ts';
 import type { GraphQLSchema } from '../type/schema.ts';
 import { assertValidSchema } from '../type/validate.ts';
 import {
   collectFields,
   collectSubfields as _collectSubfields,
 } from './collectFields.ts';
+import { mapAsyncIterable } from './mapAsyncIterable.ts';
 import { getArgumentValues, getVariableValues } from './values.ts';
+/* eslint-disable max-params */
+// This file contains a lot of such errors but we plan to refactor it anyway
+// so just disable it for entire file.
 /**
  * A memoized collection of relevant subfields with regard to the return
  * type. Memoizing ensures the subfields are not repeatedly calculated, which
@@ -158,15 +157,6 @@ export interface ExecutionArgs {
  * a GraphQLError will be thrown immediately explaining the invalid input.
  */
 export function execute(args: ExecutionArgs): PromiseOrValue<ExecutionResult> {
-  // Temporary for v15 to v16 migration. Remove in v17
-  arguments.length < 2 ||
-    devAssert(
-      false,
-      'graphql@16 dropped long-deprecated support for positional arguments, please pass an object instead.',
-    );
-  const { schema, document, variableValues, rootValue } = args;
-  // If arguments are missing or incorrect, throw an error.
-  assertValidExecutionArguments(schema, document, variableValues);
   // If a valid execution context cannot be created due to incorrect arguments,
   // a "Response" with only errors is returned.
   const exeContext = buildExecutionContext(args);
@@ -174,6 +164,11 @@ export function execute(args: ExecutionArgs): PromiseOrValue<ExecutionResult> {
   if (!('schema' in exeContext)) {
     return { errors: exeContext };
   }
+  return executeImpl(exeContext);
+}
+function executeImpl(
+  exeContext: ExecutionContext,
+): PromiseOrValue<ExecutionResult> {
   // Return a Promise that will eventually resolve to the data described by
   // The "Response" section of the GraphQL specification.
   //
@@ -186,8 +181,7 @@ export function execute(args: ExecutionArgs): PromiseOrValue<ExecutionResult> {
   // at which point we still log the error and null the parent field, which
   // in this case is the entire response.
   try {
-    const { operation } = exeContext;
-    const result = executeOperation(exeContext, operation, rootValue);
+    const result = executeOperation(exeContext);
     if (isPromise(result)) {
       return result.then(
         (data) => buildResponse(data, exeContext.errors),
@@ -227,35 +221,12 @@ function buildResponse(
   return errors.length === 0 ? { data } : { errors, data };
 }
 /**
- * Essential assertions before executing to provide developer feedback for
- * improper use of the GraphQL library.
- *
- * @internal
- */
-export function assertValidExecutionArguments(
-  schema: GraphQLSchema,
-  document: DocumentNode,
-  rawVariableValues: Maybe<{
-    readonly [variable: string]: unknown;
-  }>,
-): void {
-  document != null || devAssert(false, 'Must provide document.');
-  // If the schema used for execution is invalid, throw an error.
-  assertValidSchema(schema);
-  // Variables, if provided, must be an object.
-  rawVariableValues == null ||
-    isObjectLike(rawVariableValues) ||
-    devAssert(
-      false,
-      'Variables must be provided as an Object where each property is a variable value. Perhaps look to see if an unparsed JSON string was provided.',
-    );
-}
-/**
  * Constructs a ExecutionContext object from the arguments passed to
  * execute, which we will pass throughout the other execution methods.
  *
  * Throws a GraphQLError if a valid execution context cannot be created.
  *
+ * TODO: consider no longer exporting this function
  * @internal
  */
 export function buildExecutionContext(
@@ -272,6 +243,8 @@ export function buildExecutionContext(
     typeResolver,
     subscribeFieldResolver,
   } = args;
+  // If the schema used for execution is invalid, throw an error.
+  assertValidSchema(schema);
   let operation: OperationDefinitionNode | undefined;
   const fragments: ObjMap<FragmentDefinitionNode> = Object.create(null);
   for (const definition of document.definitions) {
@@ -328,15 +301,25 @@ export function buildExecutionContext(
     errors: [],
   };
 }
+function buildPerEventExecutionContext(
+  exeContext: ExecutionContext,
+  payload: unknown,
+): ExecutionContext {
+  return {
+    ...exeContext,
+    rootValue: payload,
+    errors: [],
+  };
+}
 /**
  * Implements the "Executing operations" section of the spec.
  */
 function executeOperation(
   exeContext: ExecutionContext,
-  operation: OperationDefinitionNode,
-  rootValue: unknown,
-): PromiseOrValue<ObjMap<unknown> | null> {
-  const rootType = exeContext.schema.getRootType(operation.operation);
+): PromiseOrValue<ObjMap<unknown>> {
+  const { operation, schema, fragments, variableValues, rootValue } =
+    exeContext;
+  const rootType = schema.getRootType(operation.operation);
   if (rootType == null) {
     throw new GraphQLError(
       `Schema is not configured to execute ${operation.operation} operation.`,
@@ -344,9 +327,9 @@ function executeOperation(
     );
   }
   const rootFields = collectFields(
-    exeContext.schema,
-    exeContext.fragments,
-    exeContext.variableValues,
+    schema,
+    fragments,
+    variableValues,
     rootType,
     operation.selectionSet,
   );
@@ -380,7 +363,7 @@ function executeFieldsSerially(
   fields: Map<string, ReadonlyArray<FieldNode>>,
 ): PromiseOrValue<ObjMap<unknown>> {
   return promiseReduce(
-    fields.entries(),
+    fields,
     (results, [responseName, fieldNodes]) => {
       const fieldPath = addPath(path, responseName, parentType.name);
       const result = executeField(
@@ -418,7 +401,7 @@ function executeFields(
 ): PromiseOrValue<ObjMap<unknown>> {
   const results = Object.create(null);
   let containsPromise = false;
-  for (const [responseName, fieldNodes] of fields.entries()) {
+  for (const [responseName, fieldNodes] of fields) {
     const fieldPath = addPath(path, responseName, parentType.name);
     const result = executeField(
       exeContext,
@@ -456,7 +439,8 @@ function executeField(
   fieldNodes: ReadonlyArray<FieldNode>,
   path: Path,
 ): PromiseOrValue<unknown> {
-  const fieldDef = getFieldDef(exeContext.schema, parentType, fieldNodes[0]);
+  const fieldName = fieldNodes[0].name.value;
+  const fieldDef = exeContext.schema.getField(parentType, fieldName);
   if (!fieldDef) {
     return;
   }
@@ -514,6 +498,7 @@ function executeField(
   }
 }
 /**
+ * TODO: consider no longer exporting this function
  * @internal
  */
 export function buildResolveInfo(
@@ -656,6 +641,63 @@ function completeValue(
     );
 }
 /**
+ * Complete a async iterator value by completing the result and calling
+ * recursively until all the results are completed.
+ */
+async function completeAsyncIteratorValue(
+  exeContext: ExecutionContext,
+  itemType: GraphQLOutputType,
+  fieldNodes: ReadonlyArray<FieldNode>,
+  info: GraphQLResolveInfo,
+  path: Path,
+  iterator: AsyncIterator<unknown>,
+): Promise<ReadonlyArray<unknown>> {
+  let containsPromise = false;
+  const completedResults = [];
+  let index = 0;
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const fieldPath = addPath(path, index, undefined);
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const { value, done } = await iterator.next();
+      if (done) {
+        break;
+      }
+      try {
+        // TODO can the error checking logic be consolidated with completeListValue?
+        const completedItem = completeValue(
+          exeContext,
+          itemType,
+          fieldNodes,
+          info,
+          fieldPath,
+          value,
+        );
+        if (isPromise(completedItem)) {
+          containsPromise = true;
+        }
+        completedResults.push(completedItem);
+      } catch (rawError) {
+        completedResults.push(null);
+        const error = locatedError(
+          rawError,
+          fieldNodes,
+          pathToArray(fieldPath),
+        );
+        handleFieldError(error, itemType, exeContext);
+      }
+    } catch (rawError) {
+      completedResults.push(null);
+      const error = locatedError(rawError, fieldNodes, pathToArray(fieldPath));
+      handleFieldError(error, itemType, exeContext);
+      break;
+    }
+    index += 1;
+  }
+  return containsPromise ? Promise.all(completedResults) : completedResults;
+}
+/**
  * Complete a list value by completing each item in the list with the
  * inner type
  */
@@ -667,6 +709,18 @@ function completeListValue(
   path: Path,
   result: unknown,
 ): PromiseOrValue<ReadonlyArray<unknown>> {
+  const itemType = returnType.ofType;
+  if (isAsyncIterable(result)) {
+    const iterator = result[Symbol.asyncIterator]();
+    return completeAsyncIteratorValue(
+      exeContext,
+      itemType,
+      fieldNodes,
+      info,
+      path,
+      iterator,
+    );
+  }
   if (!isIterableObject(result)) {
     throw new GraphQLError(
       `Expected Iterable, but did not find one for field "${info.parentType.name}.${info.fieldName}".`,
@@ -674,7 +728,6 @@ function completeListValue(
   }
   // This is specified as a simple map, however we're optimizing the path
   // where the list contains no Promises by avoiding creating another Promise.
-  const itemType = returnType.ofType;
   let containsPromise = false;
   const completedResults = Array.from(result, (item, index) => {
     // No need to modify the info object containing the path,
@@ -802,7 +855,7 @@ function ensureValidRuntimeType(
   if (runtimeTypeName == null) {
     throw new GraphQLError(
       `Abstract type "${returnType.name}" must resolve to an Object type at runtime for field "${info.parentType.name}.${info.fieldName}". Either the "${returnType.name}" type should provide a "resolveType" function or each possible type should provide an "isTypeOf" function.`,
-      fieldNodes,
+      { nodes: fieldNodes },
     );
   }
   // releases before 16.0.0 supported returning `GraphQLObjectType` from `resolveType`
@@ -945,34 +998,189 @@ export const defaultFieldResolver: GraphQLFieldResolver<unknown, unknown> =
     }
   };
 /**
- * This method looks up the field on the given type definition.
- * It has special casing for the three introspection fields,
- * __schema, __type and __typename. __typename is special because
- * it can always be queried as a field, even in situations where no
- * other fields are allowed, like on a Union. __schema and __type
- * could get automatically added to the query type, but that would
- * require mutating type definitions, which would cause issues.
+ * Implements the "Subscribe" algorithm described in the GraphQL specification.
  *
- * @internal
+ * Returns a Promise which resolves to either an AsyncIterator (if successful)
+ * or an ExecutionResult (error). The promise will be rejected if the schema or
+ * other arguments to this function are invalid, or if the resolved event stream
+ * is not an async iterable.
+ *
+ * If the client-provided arguments to this function do not result in a
+ * compliant subscription, a GraphQL Response (ExecutionResult) with
+ * descriptive errors and no data will be returned.
+ *
+ * If the source stream could not be created due to faulty subscription
+ * resolver logic or underlying systems, the promise will resolve to a single
+ * ExecutionResult containing `errors` and no `data`.
+ *
+ * If the operation succeeded, the promise resolves to an AsyncIterator, which
+ * yields a stream of ExecutionResults representing the response stream.
+ *
+ * Accepts either an object with named arguments, or individual arguments.
  */
-export function getFieldDef(
-  schema: GraphQLSchema,
-  parentType: GraphQLObjectType,
-  fieldNode: FieldNode,
-): Maybe<GraphQLField<unknown, unknown>> {
-  const fieldName = fieldNode.name.value;
-  if (
-    fieldName === SchemaMetaFieldDef.name &&
-    schema.getQueryType() === parentType
-  ) {
-    return SchemaMetaFieldDef;
-  } else if (
-    fieldName === TypeMetaFieldDef.name &&
-    schema.getQueryType() === parentType
-  ) {
-    return TypeMetaFieldDef;
-  } else if (fieldName === TypeNameMetaFieldDef.name) {
-    return TypeNameMetaFieldDef;
+export function subscribe(
+  args: ExecutionArgs,
+): PromiseOrValue<
+  AsyncGenerator<ExecutionResult, void, void> | ExecutionResult
+> {
+  // If a valid execution context cannot be created due to incorrect arguments,
+  // a "Response" with only errors is returned.
+  const exeContext = buildExecutionContext(args);
+  // Return early errors if execution context failed.
+  if (!('schema' in exeContext)) {
+    return { errors: exeContext };
   }
-  return parentType.getFields()[fieldName];
+  const resultOrStream = createSourceEventStreamImpl(exeContext);
+  if (isPromise(resultOrStream)) {
+    return resultOrStream.then((resolvedResultOrStream) =>
+      mapSourceToResponse(exeContext, resolvedResultOrStream),
+    );
+  }
+  return mapSourceToResponse(exeContext, resultOrStream);
+}
+function mapSourceToResponse(
+  exeContext: ExecutionContext,
+  resultOrStream: ExecutionResult | AsyncIterable<unknown>,
+): PromiseOrValue<
+  AsyncGenerator<ExecutionResult, void, void> | ExecutionResult
+> {
+  if (!isAsyncIterable(resultOrStream)) {
+    return resultOrStream;
+  }
+  // For each payload yielded from a subscription, map it over the normal
+  // GraphQL `execute` function, with `payload` as the rootValue.
+  // This implements the "MapSourceToResponseEvent" algorithm described in
+  // the GraphQL specification. The `execute` function provides the
+  // "ExecuteSubscriptionEvent" algorithm, as it is nearly identical to the
+  // "ExecuteQuery" algorithm, for which `execute` is also used.
+  return mapAsyncIterable(resultOrStream, (payload: unknown) =>
+    executeImpl(buildPerEventExecutionContext(exeContext, payload)),
+  );
+}
+/**
+ * Implements the "CreateSourceEventStream" algorithm described in the
+ * GraphQL specification, resolving the subscription source event stream.
+ *
+ * Returns a Promise which resolves to either an AsyncIterable (if successful)
+ * or an ExecutionResult (error). The promise will be rejected if the schema or
+ * other arguments to this function are invalid, or if the resolved event stream
+ * is not an async iterable.
+ *
+ * If the client-provided arguments to this function do not result in a
+ * compliant subscription, a GraphQL Response (ExecutionResult) with
+ * descriptive errors and no data will be returned.
+ *
+ * If the the source stream could not be created due to faulty subscription
+ * resolver logic or underlying systems, the promise will resolve to a single
+ * ExecutionResult containing `errors` and no `data`.
+ *
+ * If the operation succeeded, the promise resolves to the AsyncIterable for the
+ * event stream returned by the resolver.
+ *
+ * A Source Event Stream represents a sequence of events, each of which triggers
+ * a GraphQL execution for that event.
+ *
+ * This may be useful when hosting the stateful subscription service in a
+ * different process or machine than the stateless GraphQL execution engine,
+ * or otherwise separating these two steps. For more on this, see the
+ * "Supporting Subscriptions at Scale" information in the GraphQL specification.
+ */
+export function createSourceEventStream(
+  args: ExecutionArgs,
+): PromiseOrValue<AsyncIterable<unknown> | ExecutionResult> {
+  // If a valid execution context cannot be created due to incorrect arguments,
+  // a "Response" with only errors is returned.
+  const exeContext = buildExecutionContext(args);
+  // Return early errors if execution context failed.
+  if (!('schema' in exeContext)) {
+    return { errors: exeContext };
+  }
+  return createSourceEventStreamImpl(exeContext);
+}
+function createSourceEventStreamImpl(
+  exeContext: ExecutionContext,
+): PromiseOrValue<AsyncIterable<unknown> | ExecutionResult> {
+  try {
+    const eventStream = executeSubscription(exeContext);
+    if (isPromise(eventStream)) {
+      return eventStream.then(undefined, (error) => ({ errors: [error] }));
+    }
+    return eventStream;
+  } catch (error) {
+    return { errors: [error] };
+  }
+}
+function executeSubscription(
+  exeContext: ExecutionContext,
+): PromiseOrValue<AsyncIterable<unknown>> {
+  const { schema, fragments, operation, variableValues, rootValue } =
+    exeContext;
+  const rootType = schema.getSubscriptionType();
+  if (rootType == null) {
+    throw new GraphQLError(
+      'Schema is not configured to execute subscription operation.',
+      { nodes: operation },
+    );
+  }
+  const rootFields = collectFields(
+    schema,
+    fragments,
+    variableValues,
+    rootType,
+    operation.selectionSet,
+  );
+  const firstRootField = rootFields.entries().next().value;
+  const [responseName, fieldNodes] = firstRootField;
+  const fieldName = fieldNodes[0].name.value;
+  const fieldDef = schema.getField(rootType, fieldName);
+  if (!fieldDef) {
+    throw new GraphQLError(
+      `The subscription field "${fieldName}" is not defined.`,
+      { nodes: fieldNodes },
+    );
+  }
+  const path = addPath(undefined, responseName, rootType.name);
+  const info = buildResolveInfo(
+    exeContext,
+    fieldDef,
+    fieldNodes,
+    rootType,
+    path,
+  );
+  try {
+    // Implements the "ResolveFieldEventStream" algorithm from GraphQL specification.
+    // It differs from "ResolveFieldValue" due to providing a different `resolveFn`.
+    // Build a JS object of arguments from the field.arguments AST, using the
+    // variables scope to fulfill any variable references.
+    const args = getArgumentValues(fieldDef, fieldNodes[0], variableValues);
+    // The resolve function's optional third argument is a context value that
+    // is provided to every resolve function within an execution. It is commonly
+    // used to represent an authenticated user, or request-specific caches.
+    const contextValue = exeContext.contextValue;
+    // Call the `subscribe()` resolver or the default resolver to produce an
+    // AsyncIterable yielding raw payloads.
+    const resolveFn = fieldDef.subscribe ?? exeContext.subscribeFieldResolver;
+    const result = resolveFn(rootValue, args, contextValue, info);
+    if (isPromise(result)) {
+      return result.then(assertEventStream).then(undefined, (error) => {
+        throw locatedError(error, fieldNodes, pathToArray(path));
+      });
+    }
+    return assertEventStream(result);
+  } catch (error) {
+    throw locatedError(error, fieldNodes, pathToArray(path));
+  }
+}
+function assertEventStream(result: unknown): AsyncIterable<unknown> {
+  if (result instanceof Error) {
+    throw result;
+  }
+  // Assert field returned an event stream, otherwise yield an error.
+  if (!isAsyncIterable(result)) {
+    throw new GraphQLError(
+      'Subscription field must return Async Iterable. ' +
+        `Received: ${inspect(result)}.`,
+    );
+  }
+  return result;
 }
