@@ -1,4 +1,3 @@
-import { devAssert } from '../jsutils/devAssert.js';
 import { GraphQLError } from '../error/GraphQLError.js';
 import { visit, visitInParallel } from '../language/visitor.js';
 import { assertValidSchema } from '../type/validate.js';
@@ -37,10 +36,11 @@ export function validate(
   typeInfo = new TypeInfo(schema),
 ) {
   const maxErrors = options?.maxErrors ?? 100;
-  documentAST != null || devAssert(false, 'Must provide document.');
   // If the schema used for validation is invalid, throw an error.
   assertValidSchema(schema);
-  const abortObj = Object.freeze({});
+  const abortError = new GraphQLError(
+    'Too many validation errors, error limit reached. Validation aborted.',
+  );
   const errors = [];
   const context = new ValidationContext(
     schema,
@@ -48,13 +48,7 @@ export function validate(
     typeInfo,
     (error) => {
       if (errors.length >= maxErrors) {
-        errors.push(
-          new GraphQLError(
-            'Too many validation errors, error limit reached. Validation aborted.',
-          ),
-        );
-        // eslint-disable-next-line @typescript-eslint/no-throw-literal
-        throw abortObj;
+        throw abortError;
       }
       errors.push(error);
     },
@@ -66,7 +60,9 @@ export function validate(
   try {
     visit(documentAST, visitWithTypeInfo(typeInfo, visitor));
   } catch (e) {
-    if (e !== abortObj) {
+    if (e === abortError) {
+      errors.push(abortError);
+    } else {
       throw e;
     }
   }

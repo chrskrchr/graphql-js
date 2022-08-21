@@ -1,7 +1,5 @@
-import { devAssert } from '../jsutils/devAssert.js';
 import { inspect } from '../jsutils/inspect.js';
 import { instanceOf } from '../jsutils/instanceOf.js';
-import { isObjectLike } from '../jsutils/isObjectLike.js';
 import { toObjMap } from '../jsutils/toObjMap.js';
 import { OperationTypeNode } from '../language/ast.js';
 import {
@@ -12,7 +10,12 @@ import {
   isUnionType,
 } from './definition.js';
 import { isDirective, specifiedDirectives } from './directives.js';
-import { __Schema } from './introspection.js';
+import {
+  __Schema,
+  SchemaMetaFieldDef,
+  TypeMetaFieldDef,
+  TypeNameMetaFieldDef,
+} from './introspection.js';
 /**
  * Test if the given value is a GraphQL schema.
  */
@@ -98,22 +101,6 @@ export class GraphQLSchema {
     // If this schema was built from a source known to be valid, then it may be
     // marked with assumeValid to avoid an additional type system validation.
     this.__validationErrors = config.assumeValid === true ? [] : undefined;
-    // Check for common mistakes during construction to produce early errors.
-    isObjectLike(config) ||
-      devAssert(false, 'Must provide configuration object.');
-    !config.types ||
-      Array.isArray(config.types) ||
-      devAssert(
-        false,
-        `"types" must be Array if provided but got: ${inspect(config.types)}.`,
-      );
-    !config.directives ||
-      Array.isArray(config.directives) ||
-      devAssert(
-        false,
-        '"directives" must be Array if provided but got: ' +
-          `${inspect(config.directives)}.`,
-      );
     this.description = config.description;
     this.extensions = toObjMap(config.extensions);
     this.astNode = config.astNode;
@@ -154,7 +141,7 @@ export class GraphQLSchema {
     collectReferencedTypes(__Schema, allReferencedTypes);
     // Storing the resulting map for reference by the schema.
     this._typeMap = Object.create(null);
-    this._subTypeMap = Object.create(null);
+    this._subTypeMap = new Map();
     // Keep track of all implementations by interface name.
     this._implementationsMap = Object.create(null);
     for (const namedType of allReferencedTypes) {
@@ -162,11 +149,6 @@ export class GraphQLSchema {
         continue;
       }
       const typeName = namedType.name;
-      typeName != null ||
-        devAssert(
-          false,
-          'One of the provided types for building the Schema is missing a name.',
-        );
       if (this._typeMap[typeName] !== undefined) {
         throw new Error(
           `Schema must contain uniquely named types but contains multiple types named "${typeName}".`,
@@ -242,31 +224,57 @@ export class GraphQLSchema {
     return implementations ?? { objects: [], interfaces: [] };
   }
   isSubType(abstractType, maybeSubType) {
-    let map = this._subTypeMap[abstractType.name];
-    if (map === undefined) {
-      map = Object.create(null);
+    let set = this._subTypeMap.get(abstractType);
+    if (set === undefined) {
       if (isUnionType(abstractType)) {
-        for (const type of abstractType.getTypes()) {
-          map[type.name] = true;
-        }
+        set = new Set(abstractType.getTypes());
       } else {
         const implementations = this.getImplementations(abstractType);
-        for (const type of implementations.objects) {
-          map[type.name] = true;
-        }
-        for (const type of implementations.interfaces) {
-          map[type.name] = true;
-        }
+        set = new Set([
+          ...implementations.objects,
+          ...implementations.interfaces,
+        ]);
       }
-      this._subTypeMap[abstractType.name] = map;
+      this._subTypeMap.set(abstractType, set);
     }
-    return map[maybeSubType.name] !== undefined;
+    return set.has(maybeSubType);
   }
   getDirectives() {
     return this._directives;
   }
   getDirective(name) {
     return this.getDirectives().find((directive) => directive.name === name);
+  }
+  /**
+   * This method looks up the field on the given type definition.
+   * It has special casing for the three introspection fields, `__schema`,
+   * `__type` and `__typename`.
+   *
+   * `__typename` is special because it can always be queried as a field, even
+   * in situations where no other fields are allowed, like on a Union.
+   *
+   * `__schema` and `__type` could get automatically added to the query type,
+   * but that would require mutating type definitions, which would cause issues.
+   */
+  getField(parentType, fieldName) {
+    switch (fieldName) {
+      case SchemaMetaFieldDef.name:
+        return this.getQueryType() === parentType
+          ? SchemaMetaFieldDef
+          : undefined;
+      case TypeMetaFieldDef.name:
+        return this.getQueryType() === parentType
+          ? TypeMetaFieldDef
+          : undefined;
+      case TypeNameMetaFieldDef.name:
+        return TypeNameMetaFieldDef;
+    }
+    // this function is part "hot" path inside executor and check presence
+    // of 'getFields' is faster than to use `!isUnionType`
+    if ('getFields' in parentType) {
+      return parentType.getFields()[fieldName];
+    }
+    return undefined;
   }
   toConfig() {
     return {

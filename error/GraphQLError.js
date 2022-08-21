@@ -4,20 +4,6 @@ import {
   printLocation,
   printSourceLocation,
 } from '../language/printLocation.js';
-function toNormalizedOptions(args) {
-  const firstArg = args[0];
-  if (firstArg == null || 'kind' in firstArg || 'length' in firstArg) {
-    return {
-      nodes: firstArg,
-      source: args[1],
-      positions: args[2],
-      path: args[3],
-      originalError: args[4],
-      extensions: args[5],
-    };
-  }
-  return firstArg;
-}
 /**
  * A GraphQLError describes an Error found during the parse, validate, or
  * execute phases of performing a GraphQL operation. In addition to a message
@@ -25,9 +11,9 @@ function toNormalizedOptions(args) {
  * GraphQL document and/or execution result that correspond to the Error.
  */
 export class GraphQLError extends Error {
-  constructor(message, ...rawArgs) {
+  constructor(message, options = {}) {
     const { nodes, source, positions, path, originalError, extensions } =
-      toNormalizedOptions(rawArgs);
+      options;
     super(message);
     this.name = 'GraphQLError';
     this.path = path ?? undefined;
@@ -119,22 +105,4 @@ export class GraphQLError extends Error {
 }
 function undefinedIfEmpty(array) {
   return array === undefined || array.length === 0 ? undefined : array;
-}
-/**
- * Prints a GraphQLError to a string, representing useful location information
- * about the error's position in the source.
- *
- * @deprecated Please use `error.toString` instead. Will be removed in v17
- */
-export function printError(error) {
-  return error.toString();
-}
-/**
- * Given a GraphQLError, format it according to the rules described by the
- * Response Format, Errors section of the GraphQL Specification.
- *
- * @deprecated Please use `error.toJSON` instead. Will be removed in v17
- */
-export function formatError(error) {
-  return error.toJSON();
 }

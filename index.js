@@ -155,7 +155,6 @@ export {
   // Visit
   visit,
   visitInParallel,
-  getVisitFn,
   getEnterLeaveForKind,
   BREAK,
   Kind,
@@ -164,6 +163,7 @@ export {
   isDefinitionNode,
   isExecutableDefinitionNode,
   isSelectionNode,
+  isNullabilityAssertionNode,
   isValueNode,
   isConstValueNode,
   isTypeNode,
@@ -232,13 +232,7 @@ export {
   NoSchemaIntrospectionCustomRule,
 } from './validation/index.js';
 // Create, format, and print GraphQL errors.
-export {
-  GraphQLError,
-  syntaxError,
-  locatedError,
-  printError,
-  formatError,
-} from './error/index.js';
+export { GraphQLError, syntaxError, locatedError } from './error/index.js';
 // Utilities for operating on GraphQL type schema and parsed sources.
 export {
   // Produce the GraphQL query recommended for a full schema introspection.
@@ -287,10 +281,6 @@ export {
   isEqualType,
   isTypeSubTypeOf,
   doTypesOverlap,
-  // Asserts a string is a valid GraphQL name.
-  assertValidName,
-  // Determine if a string is a valid GraphQL name.
-  isValidNameError,
   // Compares two GraphQLSchemas and detects breaking changes.
   BreakingChangeType,
   DangerousChangeType,
